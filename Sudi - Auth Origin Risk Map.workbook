@@ -1,0 +1,315 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# 🌍 Authentication Origin Risk Map\n\nMaps the external source IP (`IPAddress`) of interactive Entra ID sign-ins from `SigninLogs`. Bubble **size** and **color** are driven by a composite `RiskScore`, not by raw volume — so the biggest bubble is the most dangerous origin, not your busiest office.\n\n**The bubble to fear is one with both failures and successes, in a country with no baseline traffic.**\n\n> Enriched with `geo_info_from_ip_address()` (MaxMind GeoLite2), with a fallback to Entra ID's own `LocationDetails` resolution for IPv6 addresses the geo DB cannot resolve. Geo data is approximate — trust `Country`, do not act on `City`."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "tr",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          },
+          {
+            "id": "bl",
+            "version": "KqlParameterItem/1.0",
+            "name": "BaselineDays",
+            "label": "Baseline history (days)",
+            "description": "How far back to look to decide which countries are 'normal' for this tenant. The baseline always excludes the displayed time range, so today's attacker cannot whitelist their own country.",
+            "type": 2,
+            "isRequired": true,
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "jsonData": "[\n  { \"value\": \"14\",  \"label\": \"14 days\" },\n  { \"value\": \"30\",  \"label\": \"30 days\", \"selected\": true },\n  { \"value\": \"60\",  \"label\": \"60 days\" },\n  { \"value\": \"90\",  \"label\": \"90 days\" }\n]"
+          },
+          {
+            "id": "mv",
+            "version": "KqlParameterItem/1.0",
+            "name": "MinAttempts",
+            "label": "Min attempts per IP",
+            "description": "Suppresses single-event bubbles. Set to 1 in a small or lab tenant.",
+            "type": 2,
+            "isRequired": true,
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "jsonData": "[\n  { \"value\": \"1\",  \"label\": \"1 (show everything)\", \"selected\": true },\n  { \"value\": \"3\",  \"label\": \"3\" },\n  { \"value\": \"5\",  \"label\": \"5\" },\n  { \"value\": \"10\", \"label\": \"10\" }\n]"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 1️⃣ Sign-in origins — `SigninLogs`\n\nOne bubble per source IP. `ResultType != 0` is **not** treated as a failure — MFA challenges, \"keep me signed in\" interrupts, and password-change prompts are bucketed separately as *Interrupts* so they do not inflate legitimate users' bubbles."
+      },
+      "name": "text-map"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// === Authentication Origin Risk Map ===\n// One bubble per source IP: where auth originates, whether it succeeded,\n// and whether that origin is normal for this tenant.\n//\n// Result codes that are NOT security failures - auth interrupts and prompts:\n//   50140 = \"Keep me signed in\" interrupt      50074 = MFA required (challenge issued)\n//   50072 = user must enroll in MFA            50076 = MFA required from new location\n//   50133 = session invalid, password changed  50144 = password expired, must change\nlet benign_interrupts = dynamic([50140, 50074, 50072, 50076, 50133, 50144, 50055]);\n//\n// Start of the displayed window. The baseline stops here so that activity being\n// plotted right now can never contribute to what counts as \"normal\".\nlet WindowStart = toscalar(\n    SigninLogs\n    | where TimeGenerated {TimeRange}\n    | summarize min(TimeGenerated));\n//\n// Countries this tenant has signed in from SUCCESSFULLY before the window.\n// Successes only - including failures would let an attacker country whitelist itself.\nlet KnownCountries =\n    SigninLogs\n    | where TimeGenerated between (ago({BaselineDays}d) .. WindowStart)\n    | where ResultType == 0\n    | summarize BaselineSuccesses = count() by Country = tostring(Location)\n    | where BaselineSuccesses >= 5;   // stops one traveling exec becoming a permanent exception\n//\nSigninLogs\n| where TimeGenerated {TimeRange}\n| where isnotempty(IPAddress)\n| where isnotempty(UserPrincipalName)          // drop service principal / non-user rows\n//\n// Three buckets, not the usual success/fail binary.\n| extend Outcome = case(\n    ResultType == 0,                          \"Success\",\n    ResultType in (benign_interrupts),        \"Interrupt\",\n                                              \"Failure\")\n//\n// --- Geo enrichment ---\n| extend geo = geo_info_from_ip_address(IPAddress)\n| extend Latitude  = toreal(geo.latitude),\n         Longitude = toreal(geo.longitude),\n         Country   = tostring(geo.country),\n         State     = tostring(geo.state),\n         City      = tostring(geo.city)\n//\n// Fallback to Entra's own sign-in-time resolution. Critical in IPv6-heavy tenants:\n// without it most rows resolve to null coordinates and vanish from the map.\n| extend loc = todynamic(LocationDetails)\n| extend Latitude  = iff(isnull(Latitude),  toreal(loc.geoCoordinates.latitude),  Latitude),\n         Longitude = iff(isnull(Longitude), toreal(loc.geoCoordinates.longitude), Longitude),\n         Country   = iff(isempty(Country),  tostring(loc.countryOrRegion),        Country),\n         City      = iff(isempty(City),     tostring(loc.city),                   City)\n//\n// No coordinates = nothing to plot. Also removes private/internal addresses.\n| where isnotnull(Latitude) and isnotnull(Longitude)\n| where Latitude != 0 or Longitude != 0\n//\n// --- Aggregate to one row per source IP ---\n| summarize\n        Attempts        = count(),\n        Successes       = countif(Outcome == \"Success\"),\n        Failures        = countif(Outcome == \"Failure\"),\n        Interrupts      = countif(Outcome == \"Interrupt\"),\n        UsersTargeted   = dcount(UserPrincipalName),\n        UsersFailed     = dcountif(UserPrincipalName, Outcome == \"Failure\"),\n        UsersSucceeded  = dcountif(UserPrincipalName, Outcome == \"Success\"),\n        RiskySignIns    = countif(RiskLevelDuringSignIn in (\"low\", \"medium\", \"high\")),\n        FailureCodes    = make_set_if(ResultType, Outcome == \"Failure\", 10),\n        Accounts        = make_set(UserPrincipalName, 20),\n        Apps            = make_set(AppDisplayName, 10),\n        UserAgents      = dcount(UserAgent),\n        ASN             = any(AutonomousSystemNumber),\n        FirstSeen       = min(TimeGenerated),\n        LastSeen        = max(TimeGenerated)\n    by IPAddress, Country, State, City, Latitude, Longitude\n| where Attempts >= {MinAttempts}\n| extend FailureRate = round(100.0 * Failures / Attempts, 1)\n//\n// --- Is this origin normal for the tenant? ---\n| join kind=leftouter KnownCountries on $left.Country == $right.Country\n| extend RareCountry = isnull(BaselineSuccesses)\n| project-away Country1, BaselineSuccesses\n//\n// --- Verdict: first match wins, ordered most severe first ---\n| extend Verdict = case(\n    Failures >= 5 and Successes > 0,                             \"Failed then succeeded - possible compromise\",\n    UsersTargeted >= 5 and Failures >= 10 and FailureRate >= 50, \"Spray / enumeration\",\n    RareCountry and Successes > 0,                               \"Success from unusual country\",\n    RareCountry,                                                 \"Failed auth from unusual country\",\n    RiskySignIns > 0,                                            \"Entra risk detection on this IP\",\n    Failures >= 10,                                              \"High failure volume\",\n                                                                 \"Normal\")\n//\n// Composite score drives bubble SIZE and COLOR, so severity reads visually rather\n// than by attempt count (which would just draw a giant bubble over HQ every time).\n| extend RiskScore =\n        (Failures * 1)\n      + (UsersFailed * 5)                                   // breadth = spray indicator\n      + (iff(Failures >= 5 and Successes > 0, 50, 0))       // the case you must not miss\n      + (iff(RareCountry, 25, 0))\n      + (RiskySignIns * 10)\n//\n| extend MapLabel = strcat(\n        City, \", \", Country, \" | \", IPAddress,\n        \" | \", Successes, \" ok / \", Failures, \" fail across \", UsersTargeted, \" users\",\n        \" | \", Verdict)\n//\n| project Latitude, Longitude, MapLabel, RiskScore, Verdict,\n          IPAddress, Country, State, City, ASN, RareCountry,\n          Attempts, Successes, Failures, Interrupts, FailureRate,\n          UsersTargeted, UsersFailed, UsersSucceeded, RiskySignIns,\n          FailureCodes, Accounts, Apps, UserAgents, FirstSeen, LastSeen\n| order by RiskScore desc, Failures desc",
+        "size": 0,
+        "title": "Sign-in origins — bubble size & color = RiskScore",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "map",
+        "mapSettings": {
+          "locInfo": "LatLong",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "sizeSettings": "RiskScore",
+          "sizeAggregation": "Sum",
+          "labelSettings": "MapLabel",
+          "legendMetric": "RiskScore",
+          "legendAggregation": "Sum",
+          "legendColor": "RiskScore",
+          "itemColorSettings": {
+            "nodeColorField": "RiskScore",
+            "colorAggregation": "Sum",
+            "type": "heatmap",
+            "heatmapPalette": "greenRed"
+          }
+        }
+      },
+      "name": "map-signin"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 2️⃣ Verdict distribution\n\nHow the source IPs break down by pattern. In a healthy tenant this is almost entirely **Normal** — anything else is a work queue."
+      },
+      "name": "text-verdict"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let benign_interrupts = dynamic([50140, 50074, 50072, 50076, 50133, 50144, 50055]);\nlet WindowStart = toscalar(\n    SigninLogs | where TimeGenerated {TimeRange} | summarize min(TimeGenerated));\nlet KnownCountries =\n    SigninLogs\n    | where TimeGenerated between (ago({BaselineDays}d) .. WindowStart)\n    | where ResultType == 0\n    | summarize BaselineSuccesses = count() by Country = tostring(Location)\n    | where BaselineSuccesses >= 5;\nSigninLogs\n| where TimeGenerated {TimeRange}\n| where isnotempty(IPAddress) and isnotempty(UserPrincipalName)\n| extend Outcome = case(ResultType == 0, \"Success\",\n                        ResultType in (benign_interrupts), \"Interrupt\",\n                        \"Failure\")\n| extend Country = tostring(Location)\n| summarize Attempts      = count(),\n            Successes     = countif(Outcome == \"Success\"),\n            Failures      = countif(Outcome == \"Failure\"),\n            UsersTargeted = dcount(UserPrincipalName),\n            UsersFailed   = dcountif(UserPrincipalName, Outcome == \"Failure\"),\n            RiskySignIns  = countif(RiskLevelDuringSignIn in (\"low\", \"medium\", \"high\"))\n         by IPAddress, Country\n| where Attempts >= {MinAttempts}\n| extend FailureRate = round(100.0 * Failures / Attempts, 1)\n| join kind=leftouter KnownCountries on $left.Country == $right.Country\n| extend RareCountry = isnull(BaselineSuccesses)\n| extend Verdict = case(\n    Failures >= 5 and Successes > 0,                             \"Failed then succeeded - possible compromise\",\n    UsersTargeted >= 5 and Failures >= 10 and FailureRate >= 50, \"Spray / enumeration\",\n    RareCountry and Successes > 0,                               \"Success from unusual country\",\n    RareCountry,                                                 \"Failed auth from unusual country\",\n    RiskySignIns > 0,                                            \"Entra risk detection on this IP\",\n    Failures >= 10,                                              \"High failure volume\",\n                                                                 \"Normal\")\n| summarize SourceIPs = dcount(IPAddress) by Verdict\n| order by SourceIPs desc",
+        "size": 1,
+        "title": "Source IPs by verdict",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "piechart"
+      },
+      "name": "chart-verdict"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 3️⃣ Source IP breakdown\n\nSame data as the map, ranked by `RiskScore`, with the accounts and applications touched by each origin. Start at the top row."
+      },
+      "name": "text-grid"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Companion grid: same logic as the map, ranked, with accounts and apps per source.\nlet benign_interrupts = dynamic([50140, 50074, 50072, 50076, 50133, 50144, 50055]);\nlet WindowStart = toscalar(\n    SigninLogs | where TimeGenerated {TimeRange} | summarize min(TimeGenerated));\nlet KnownCountries =\n    SigninLogs\n    | where TimeGenerated between (ago({BaselineDays}d) .. WindowStart)\n    | where ResultType == 0\n    | summarize BaselineSuccesses = count() by Country = tostring(Location)\n    | where BaselineSuccesses >= 5;\nSigninLogs\n| where TimeGenerated {TimeRange}\n| where isnotempty(IPAddress) and isnotempty(UserPrincipalName)\n| extend Outcome = case(ResultType == 0, \"Success\",\n                        ResultType in (benign_interrupts), \"Interrupt\",\n                        \"Failure\")\n| extend geo = geo_info_from_ip_address(IPAddress)\n| extend loc = todynamic(LocationDetails)\n| extend Country = iff(isempty(tostring(geo.country)), tostring(loc.countryOrRegion), tostring(geo.country)),\n         City    = iff(isempty(tostring(geo.city)),    tostring(loc.city),            tostring(geo.city))\n| summarize Attempts      = count(),\n            Successes     = countif(Outcome == \"Success\"),\n            Failures      = countif(Outcome == \"Failure\"),\n            Interrupts    = countif(Outcome == \"Interrupt\"),\n            UsersTargeted = dcount(UserPrincipalName),\n            UsersFailed   = dcountif(UserPrincipalName, Outcome == \"Failure\"),\n            RiskySignIns  = countif(RiskLevelDuringSignIn in (\"low\", \"medium\", \"high\")),\n            FailureCodes  = make_set_if(ResultType, Outcome == \"Failure\", 10),\n            Accounts      = make_set(UserPrincipalName, 25),\n            Apps          = make_set(AppDisplayName, 10),\n            ASN           = any(AutonomousSystemNumber),\n            LastSeen      = max(TimeGenerated)\n         by IPAddress, Country, City\n| where Attempts >= {MinAttempts}\n| extend FailureRate = round(100.0 * Failures / Attempts, 1)\n| join kind=leftouter KnownCountries on $left.Country == $right.Country\n| extend RareCountry = isnull(BaselineSuccesses)\n| project-away Country1, BaselineSuccesses\n| extend Verdict = case(\n    Failures >= 5 and Successes > 0,                             \"Failed then succeeded - possible compromise\",\n    UsersTargeted >= 5 and Failures >= 10 and FailureRate >= 50, \"Spray / enumeration\",\n    RareCountry and Successes > 0,                               \"Success from unusual country\",\n    RareCountry,                                                 \"Failed auth from unusual country\",\n    RiskySignIns > 0,                                            \"Entra risk detection on this IP\",\n    Failures >= 10,                                              \"High failure volume\",\n                                                                 \"Normal\")\n| extend RiskScore = (Failures * 1) + (UsersFailed * 5)\n                   + iff(Failures >= 5 and Successes > 0, 50, 0)\n                   + iff(RareCountry, 25, 0)\n                   + (RiskySignIns * 10)\n| project RiskScore, Verdict, IPAddress, Country, City, ASN,\n          Attempts, Successes, Failures, Interrupts, FailureRate,\n          UsersTargeted, UsersFailed, RiskySignIns,\n          FailureCodes, Accounts, Apps, LastSeen\n| order by RiskScore desc, Failures desc",
+        "size": 0,
+        "title": "Source IP breakdown (ranked by risk)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "RiskScore",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redBright"
+              }
+            },
+            {
+              "columnMatch": "Verdict",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Failed then succeeded - possible compromise",
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Spray / enumeration",
+                    "representation": "redBright",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Success from unusual country",
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Failed auth from unusual country",
+                    "representation": "yellow",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Entra risk detection on this IP",
+                    "representation": "orange",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "High failure volume",
+                    "representation": "yellow",
+                    "text": "{0}{1}"
+                  },
+                  {
+                    "operator": "Default",
+                    "thresholdValue": null,
+                    "representation": "success",
+                    "text": "{0}{1}"
+                  }
+                ]
+              }
+            },
+            {
+              "columnMatch": "FailureRate",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "red"
+              }
+            },
+            {
+              "columnMatch": "Failures",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "red"
+              }
+            },
+            {
+              "columnMatch": "Successes",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "green"
+              }
+            },
+            {
+              "columnMatch": "Accounts",
+              "formatter": 1
+            },
+            {
+              "columnMatch": "Apps",
+              "formatter": 1
+            },
+            {
+              "columnMatch": "FailureCodes",
+              "formatter": 1
+            }
+          ]
+        },
+        "sortBy": []
+      },
+      "name": "grid-signin"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 4️⃣ Failure reasons\n\nWhat is actually failing, by Entra result code. `50126` (invalid username or password) rising against many distinct users is the spray signature; `50053` is smart lockout, meaning it has already been going on for a while."
+      },
+      "name": "text-codes"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let benign_interrupts = dynamic([50140, 50074, 50072, 50076, 50133, 50144, 50055]);\nSigninLogs\n| where TimeGenerated {TimeRange}\n| where isnotempty(UserPrincipalName)\n| where ResultType != 0 and ResultType !in (benign_interrupts)\n| summarize Failures    = count(),\n            Users       = dcount(UserPrincipalName),\n            SourceIPs   = dcount(IPAddress),\n            Countries   = make_set(Location, 15)\n         by ResultType = tostring(ResultType),\n            Reason      = ResultDescription\n| order by Failures desc",
+        "size": 0,
+        "title": "Failure codes (interrupts and MFA prompts excluded)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Failures",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "red"
+              }
+            },
+            {
+              "columnMatch": "Users",
+              "formatter": 4,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            },
+            {
+              "columnMatch": "Countries",
+              "formatter": 1
+            }
+          ]
+        }
+      },
+      "name": "grid-codes"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "---\n### Reading this dashboard\n\n| Verdict | Action |\n|---|---|\n| **Failed then succeeded** | Treat as compromise until disproven. Revoke sessions, reset credentials, check the AzureActivity map for control-plane follow-on. |\n| **Spray / enumeration** | Confirm smart lockout and Conditional Access are enforcing. Block the ASN if it is not a carrier. |\n| **Success from unusual country** | Verify travel with the user before assuming malice. |\n| **Failed auth from unusual country** | Low urgency on its own; watch for it turning into a success. |\n\n### Caveats\n\n- **Baseline needs history.** With less than `BaselineDays` of data in the workspace, every country flags as rare and the map turns solid red. In a new or lab workspace, replace `KnownCountries` with a hardcoded `datatable` of your expected footprint.\n- **VPN and mobile carriers** produce legitimate rare-country hits. Suppress by `ASN`, not by country — excluding a country creates a real blind spot.\n- **Geo is approximate.** `Country` is reliable enough to act on; `City` is roughly 50-80% accurate for IPv4 and worse for IPv6. Do not put city names in an incident narrative.\n- **Thresholds are starting points.** `UsersTargeted >= 5` and `Failures >= 10` suit a mid-size tenant. Tune to roughly the 95th percentile of your own `UsersFailed` distribution."
+      },
+      "name": "footer"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/3c95e63a-895a-4386-991e-edbbf57de5c8/resourcegroups/cyber-range-admin-soc/providers/microsoft.operationalinsights/workspaces/law-cyber-range"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

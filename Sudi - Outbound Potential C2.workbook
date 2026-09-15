@@ -1,0 +1,113 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# 🌍 Outbound C2 / Beacon Destinations\n\nMaps external destination IPs (`RemoteIP`) endpoints connect out to, from `DeviceNetworkEvents`, with Microsoft/Windows/Azure noise stripped. **Bubble size = distinct devices (fan-in); color = same.** Only destinations contacted by **more than 10 distinct devices** are shown — a single foreign destination pulled by many endpoints is a candidate C2.\n\n> Enriched with `geo_info_from_ip_address()`. Geo data (MaxMind GeoLite2) is approximate."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "tr",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 2592000000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Outbound C2 / Beacon Destinations — `DeviceNetworkEvents`\n\nMaps the external destination IP (`RemoteIP`) your endpoints connected *out* to, with known-good Microsoft/Windows/Azure destinations stripped. Bubble **size & color** = number of distinct devices reaching that destination (fan-in). **A single foreign destination pulled by many endpoints is a candidate C2.**"
+      },
+      "name": "text-network"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// === Outbound C2 / beacon destinations (geo) ===\n// Goal: plot WHERE endpoints are connecting out to, minus legit MS traffic.\nDeviceNetworkEvents\n| where Timestamp {TimeRange}\n// Only successful/attempted egress to real external addresses.\n| where RemoteIPType == \"Public\" and isnotempty(RemoteIP)\n// Strip the obvious legitimate cloud/OS destinations by URL suffix so the\n// map isn't dominated by Windows Update / telemetry / Office noise.\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"microsoft.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"windows.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"windowsupdate.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"azure.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"office.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"msftncsi.com\"\n// Enrich the destination IP with geolocation.\n| extend geo = geo_info_from_ip_address(RemoteIP)\n| extend Latitude  = toreal(geo.latitude),\n         Longitude = toreal(geo.longitude),\n         Country   = tostring(geo.country),\n         State     = tostring(geo.state),\n         City      = tostring(geo.city)\n| where isnotempty(Latitude) and isnotempty(Longitude)\n// One bubble per destination. 'Devices' = fan-in (how many endpoints\n// contact it) — high fan-in to one odd destination is the C2 tell.\n| summarize Connections = count(),\n            Devices     = dcount(DeviceName),\n            Processes   = make_set(InitiatingProcessFileName, 25),\n            Ports       = make_set(RemotePort, 15),\n            SampleUrl   = take_any(RemoteUrl)\n         by RemoteIP, Country, State, City, Latitude, Longitude\n// Keep only widely-contacted destinations (shared-infrastructure / C2 tell).\n| where Connections >= 5\n| extend MapLabel = strcat(SampleUrl, \" (\", City, \", \", State, \", \", Country, \") — \", Devices, \" devices\")\n| project Latitude, Longitude, MapLabel, Devices, Connections, Processes, Ports, SampleUrl, RemoteIP, Country, State, City\n| order by Devices desc, Connections desc",
+        "size": 0,
+        "title": "Outbound destinations — bubble size = distinct devices (fan-in)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "map",
+        "mapSettings": {
+          "locInfo": "LatLong",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "sizeSettings": "Devices",
+          "sizeAggregation": "Sum",
+          "labelSettings": "MapLabel",
+          "legendMetric": "Devices",
+          "legendAggregation": "Sum",
+          "legendColor": "Devices",
+          "itemColorSettings": {
+            "nodeColorField": "Devices",
+            "colorAggregation": "Sum",
+            "type": "heatmap",
+            "heatmapPalette": "greenRed"
+          }
+        }
+      },
+      "name": "map-network"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Companion grid: destinations ranked by fan-in, with the processes that\n// initiated the connections (helps separate browsers from implants).\n// Filters kept congruent with the map above (same MS strip + Devices > 10 floor).\nDeviceNetworkEvents\n| where Timestamp {TimeRange}\n| where RemoteIPType == \"Public\" and isnotempty(RemoteIP)\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"microsoft.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"windows.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"windowsupdate.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"azure.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"office.com\"\n| where isempty(RemoteUrl) or RemoteUrl !endswith \"msftncsi.com\"\n| extend geo = geo_info_from_ip_address(RemoteIP)\n| summarize Connections = count(),\n            Devices     = dcount(DeviceName),\n            Processes   = make_set(InitiatingProcessFileName, 25),\n            Ports       = make_set(RemotePort, 15)\n         by RemoteUrl, RemoteIP,\n            Country = tostring(geo.country),\n            State   = tostring(geo.state),\n            City    = tostring(geo.city)\n| where Connections >= 5\n| order by Connections desc, Devices desc",
+        "size": 0,
+        "title": "Destination IP breakdown (fan-in + initiating processes)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "grid-network"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/3c95e63a-895a-4386-991e-edbbf57de5c8/resourcegroups/cyber-range-admin-soc/providers/microsoft.operationalinsights/workspaces/law-cyber-range"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

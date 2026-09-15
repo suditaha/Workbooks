@@ -1,0 +1,113 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# 🌍 Outbound C2 / Beacon Destinations\n\nMaps external destination IPs (`RemoteIP`) endpoints connect out to from `DeviceNetworkEvents`, with common Microsoft/Windows/Azure/M365 traffic stripped by both hostname and IP range. **Bubble size = distinct devices (fan-in); color = same.** Destinations must be contacted by at least **2 distinct devices** with at least **10 total connections**.\n\n> Enriched with `geo_info_from_ip_address()`. Geo data is approximate."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "tr",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Outbound C2 / Beacon Destinations — `DeviceNetworkEvents`\n\nMaps external destination IPs (`RemoteIP`) your endpoints connect out to, while filtering common Microsoft/Windows/Azure/M365 traffic by **hostname and Microsoft IP space**. Bubble **size & color** = number of distinct devices reaching the destination. The table also calculates **connections per device** to help distinguish heavily beaconing destinations from ordinary shared infrastructure."
+      },
+      "name": "text-network"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// === Outbound C2 / beacon destinations (geo) ===\n// Goal: show meaningful NON-MICROSOFT outbound destinations.\n\nlet MicrosoftIPRanges = dynamic([\n    \"13.64.0.0/11\",\n    \"13.96.0.0/13\",\n    \"13.104.0.0/14\",\n    \"20.0.0.0/8\",\n    \"40.64.0.0/10\",\n    \"40.96.0.0/12\",\n    \"40.112.0.0/13\",\n    \"52.96.0.0/12\",\n    \"52.112.0.0/14\",\n    \"52.120.0.0/14\",\n    \"104.40.0.0/13\",\n    \"150.171.0.0/16\"\n]);\n\nDeviceNetworkEvents\n| where Timestamp {TimeRange}\n| where RemoteIPType == \"Public\" and isnotempty(RemoteIP)\n\n// Normalize hostname for filtering.\n| extend Host = tolower(RemoteUrl)\n\n// Remove common Microsoft / Windows / Azure / M365 domains.\n| where isempty(Host) or not(\n    Host endswith \"microsoft.com\"\n    or Host endswith \"windows.com\"\n    or Host endswith \"windowsupdate.com\"\n    or Host endswith \"azure.com\"\n    or Host endswith \"azure.net\"\n    or Host endswith \"azureedge.net\"\n    or Host endswith \"office.com\"\n    or Host endswith \"office.net\"\n    or Host endswith \"office365.com\"\n    or Host endswith \"microsoftonline.com\"\n    or Host endswith \"microsoftonline-p.com\"\n    or Host endswith \"live.com\"\n    or Host endswith \"msn.com\"\n    or Host endswith \"bing.com\"\n    or Host endswith \"msedge.net\"\n    or Host endswith \"windows.net\"\n    or Host endswith \"msftconnecttest.com\"\n    or Host endswith \"msftncsi.com\"\n    or Host endswith \"sharepoint.com\"\n    or Host endswith \"sharepointonline.com\"\n    or Host endswith \"outlook.com\"\n    or Host endswith \"skype.com\"\n    or Host endswith \"msecnd.net\"\n)\n\n// Remove Microsoft-owned cloud/M365 IP space even when RemoteUrl is empty.\n| where ipv4_is_in_any_range(RemoteIP, MicrosoftIPRanges) != true\n\n// Geo-enrich destination IP.\n| extend geo = geo_info_from_ip_address(RemoteIP)\n| extend Latitude = toreal(geo.latitude),\n         Longitude = toreal(geo.longitude),\n         Country = tostring(geo.country),\n         State = tostring(geo.state),\n         City = tostring(geo.city)\n| where isnotempty(Latitude) and isnotempty(Longitude)\n\n// Aggregate by destination.\n| summarize Connections = count(),\n            Devices = dcount(DeviceName),\n            Processes = make_set(InitiatingProcessFileName, 25),\n            Ports = make_set(RemotePort, 15),\n            SampleUrl = take_any(RemoteUrl)\n    by RemoteIP, Country, State, City, Latitude, Longitude\n\n// Require multi-device fan-in plus meaningful connection volume.\n| where Devices >= 2 and Connections >= 10\n| extend ConnectionsPerDevice = round(todouble(Connections) / Devices, 1)\n| extend MapLabel = strcat(\n    iff(isempty(SampleUrl), RemoteIP, SampleUrl),\n    \" (\", City, \", \", State, \", \", Country, \") — \",\n    Devices, \" devices / \", ConnectionsPerDevice, \" conn/device\"\n)\n| project Latitude, Longitude, MapLabel, Devices, Connections, ConnectionsPerDevice, Processes, Ports, SampleUrl, RemoteIP, Country, State, City\n| order by Devices desc, ConnectionsPerDevice desc",
+        "size": 0,
+        "title": "Outbound destinations — bubble size = distinct devices (fan-in)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "map",
+        "mapSettings": {
+          "locInfo": "LatLong",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "sizeSettings": "Devices",
+          "sizeAggregation": "Sum",
+          "labelSettings": "MapLabel",
+          "legendMetric": "Devices",
+          "legendAggregation": "Sum",
+          "legendColor": "Devices",
+          "itemColorSettings": {
+            "nodeColorField": "Devices",
+            "colorAggregation": "Sum",
+            "type": "heatmap",
+            "heatmapPalette": "greenRed"
+          }
+        }
+      },
+      "name": "map-network"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// === Companion grid: non-Microsoft outbound destinations ===\n// Uses the same filtering as the map above.\n\nlet MicrosoftIPRanges = dynamic([\n    \"13.64.0.0/11\",\n    \"13.96.0.0/13\",\n    \"13.104.0.0/14\",\n    \"20.0.0.0/8\",\n    \"40.64.0.0/10\",\n    \"40.96.0.0/12\",\n    \"40.112.0.0/13\",\n    \"52.96.0.0/12\",\n    \"52.112.0.0/14\",\n    \"52.120.0.0/14\",\n    \"104.40.0.0/13\",\n    \"150.171.0.0/16\"\n]);\n\nDeviceNetworkEvents\n| where Timestamp {TimeRange}\n| where RemoteIPType == \"Public\" and isnotempty(RemoteIP)\n| extend Host = tolower(RemoteUrl)\n\n// Remove common Microsoft / Windows / Azure / M365 domains.\n| where isempty(Host) or not(\n    Host endswith \"microsoft.com\"\n    or Host endswith \"windows.com\"\n    or Host endswith \"windowsupdate.com\"\n    or Host endswith \"azure.com\"\n    or Host endswith \"azure.net\"\n    or Host endswith \"azureedge.net\"\n    or Host endswith \"office.com\"\n    or Host endswith \"office.net\"\n    or Host endswith \"office365.com\"\n    or Host endswith \"microsoftonline.com\"\n    or Host endswith \"microsoftonline-p.com\"\n    or Host endswith \"live.com\"\n    or Host endswith \"msn.com\"\n    or Host endswith \"bing.com\"\n    or Host endswith \"msedge.net\"\n    or Host endswith \"windows.net\"\n    or Host endswith \"msftconnecttest.com\"\n    or Host endswith \"msftncsi.com\"\n    or Host endswith \"sharepoint.com\"\n    or Host endswith \"sharepointonline.com\"\n    or Host endswith \"outlook.com\"\n    or Host endswith \"skype.com\"\n    or Host endswith \"msecnd.net\"\n)\n\n// Remove Microsoft IP space even where hostname is missing.\n| where ipv4_is_in_any_range(RemoteIP, MicrosoftIPRanges) != true\n\n| extend geo = geo_info_from_ip_address(RemoteIP)\n| summarize Connections = count(),\n            Devices = dcount(DeviceName),\n            Processes = make_set(InitiatingProcessFileName, 25),\n            Ports = make_set(RemotePort, 15)\n    by RemoteUrl,\n       RemoteIP,\n       Country = tostring(geo.country),\n       State = tostring(geo.state),\n       City = tostring(geo.city)\n\n| where Devices >= 2 and Connections >= 10\n| extend ConnectionsPerDevice = round(todouble(Connections) / Devices, 1)\n| project RemoteUrl, RemoteIP, Country, State, City, Connections, Devices, ConnectionsPerDevice, Processes, Ports\n| order by ConnectionsPerDevice desc, Connections desc, Devices desc",
+        "size": 0,
+        "title": "Destination IP breakdown (fan-in + initiating processes)",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "grid-network"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/3c95e63a-895a-4386-991e-edbbf57de5c8/resourcegroups/cyber-range-admin-soc/providers/microsoft.operationalinsights/workspaces/law-cyber-range"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
