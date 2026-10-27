@@ -10,6 +10,9 @@ Built and deployed in a live Azure cyber-range environment using `DeviceNetworkE
 
 ### 🌍 Outbound C2 / Beacon Destinations (v1 + v2)
 
+<img width="767" height="704" alt="Screenshot 2026-10-26 at 10 52 28 PM" src="https://github.com/user-attachments/assets/aa0c1904-567e-4a50-971b-daa592768249" />
+
+
 **Files:** `Sudi_-_Outbound_Potential_C2.workbook` · `Sudi_-_Outbound_Potiential_C2_V2.workbook`
 
 Detects potential Command-and-Control (C2) beaconing by mapping outbound connections from `DeviceNetworkEvents` — with Microsoft, Windows, Azure, and M365 destinations stripped by both hostname and IP range.
