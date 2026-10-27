@@ -64,6 +64,9 @@ Correlates accepted inbound traffic against the live `ThreatIntelIndicators` fee
 ---
 
 ### 🔐 Authentication Origin Risk Map
+<img width="876" height="556" alt="Screenshot 2026-10-26 at 11 01 33 PM" src="https://github.com/user-attachments/assets/39d02569-68b0-429d-8e06-1f9b9cf9d573" />
+<img width="878" height="740" alt="Screenshot 2026-10-26 at 11 02 13 PM" src="https://github.com/user-attachments/assets/53d0bb34-8c02-4f1e-a757-48ce9ac590f0" />
+
 
 **File:** `Sudi_-_Auth_Origin_Risk_Map.workbook`
 
