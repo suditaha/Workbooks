@@ -43,7 +43,7 @@ Catches large outbound data transfers that endpoint-layer tables like MDE cannot
 
 ### 🚨 Allowed Inbound Flows from Threat-Intel IPs
 
-<img width="774" height="702" alt="Screenshot 2026-10-26 at 10 36 43 PM" src="https://github.com/user-attachments/assets/e3ba4088-8aeb-4739-8ef4-999d7f53cb7e" />
+<img width="774" height="702" alt="Screenshot 2026-10-26 at 10 36 43 PM" src="https://github.com/user-attachments/assets/6c5032e9-a19a-40ad-b520-1e65f68d2d7d" />
 
 
 **File:** `Sudi_-_Threat_Intel_Inbound.workbook`
