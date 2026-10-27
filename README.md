@@ -32,6 +32,8 @@ Detects potential Command-and-Control (C2) beaconing by mapping outbound connect
 
 ### 📤 Potential Exfiltration by Volume
 
+<img width="771" height="713" alt="Screenshot 2026-10-26 at 10 57 49 PM" src="https://github.com/user-attachments/assets/6b1aacbc-b936-4579-bd14-efaaed682505" />
+
 **File:** `Sudi_-_Potential_Exfiltration.workbook`
 
 Catches large outbound data transfers that endpoint-layer tables like MDE cannot show. Uses VNet flow logs from `NTANetAnalytics` to size each external destination by bytes sent (`bytesOut`), then geo-enriches and maps them.
