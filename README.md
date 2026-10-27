@@ -43,6 +43,9 @@ Catches large outbound data transfers that endpoint-layer tables like MDE cannot
 
 ### 🚨 Allowed Inbound Flows from Threat-Intel IPs
 
+<img width="774" height="702" alt="Screenshot 2026-10-26 at 10 36 43 PM" src="https://github.com/user-attachments/assets/e3ba4088-8aeb-4739-8ef4-999d7f53cb7e" />
+
+
 **File:** `Sudi_-_Threat_Intel_Inbound.workbook`
 
 Correlates accepted inbound traffic against the live `ThreatIntelIndicators` feed. Most TI dashboards just show you that a known-bad IP knocked — this one shows you it **got in**.
